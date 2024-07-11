@@ -19,7 +19,6 @@ contract DecentralizedBank {
 
     struct User {
         uint256 balance;
-        uint256 interest;
         bool isPaused;
     }
 
@@ -28,7 +27,7 @@ contract DecentralizedBank {
         uint256 lastUpdate;
     }
 
-    enum TransactionType{ WITHDRAWAL, DEPOSIT }
+    enum TransactionType{ WITHDRAWAL, DEPOSIT, INTEREST }
 
     struct TransactionHistory{
         uint256 amount;
@@ -45,16 +44,24 @@ contract DecentralizedBank {
     }
 
     modifier isUserEnableToWithdrawalAndDeposit(){
-        require(!users[msg.sender].isPaused, "Your transactions permission is locked");
+        require(!users[msg.sender].isPaused, "Your account is locked");
         _;
     }
 
-    function changeInterest(uint8 newInterest) public isAdmin() {
+    modifier calculateInterest(){
+        uint daysDiference = (block.timestamp - interests[msg.sender].lastUpdate) / secondsInDay;
+        uint earnedInterest = ((users[msg.sender].balance * currentInterest) / 100) * daysDiference;
+        interests[msg.sender].amount += earnedInterest;
+        interests[msg.sender].lastUpdate = block.timestamp;
+        _;
+    }
+
+    function changeInterest(uint8 newInterest) public isAdmin {
         currentInterest = newInterest;
     }
 
     
-    function pauseWallet(address _userAddress, bool pauseStatus) public isAdmin() {
+    function pauseWallet(address _userAddress, bool pauseStatus) public isAdmin {
         users[_userAddress].isPaused = pauseStatus;
     }    
 
@@ -63,7 +70,7 @@ contract DecentralizedBank {
         return transactionHistory[msg.sender];
     }
 
-    function deposit() public payable {
+    function deposit() public payable isUserEnableToWithdrawalAndDeposit() calculateInterest {
         require(msg.value > 0, "Please provide non-zero amount");
 
         users[msg.sender].balance += msg.value;
@@ -75,12 +82,17 @@ contract DecentralizedBank {
         emit Deposit(msg.sender, "Amount deposited succuessfully");
     }
 
-    function withdrawal() public payable {
-        require(msg.value > 0, "Please provide non-zero amount");
+    function withdrawal(uint256 _amount) public isUserEnableToWithdrawalAndDeposit calculateInterest {
+        require(_amount > 0, "Please provide non-zero amount");
+        require(users[msg.sender].balance >= _amount, "Insufficient amount");
 
-        users[msg.sender].balance -= msg.value;
+        users[msg.sender].balance -= _amount;
 
-        TransactionHistory memory newHistory = TransactionHistory(msg.value, TransactionType.WITHDRAWAL);
+        // Transfer Ether to the user
+        (bool success, ) = msg.sender.call{value: _amount}("");
+        require(success, "Transfer failed.");
+
+        TransactionHistory memory newHistory = TransactionHistory(_amount, TransactionType.WITHDRAWAL);
         
         transactionHistory[msg.sender].push(newHistory);
 
@@ -89,6 +101,25 @@ contract DecentralizedBank {
 
     function checkBalance() public view returns(uint256) {   
         return users[msg.sender].balance;
+    }
+
+    function checkEarnedInterest() public isUserEnableToWithdrawalAndDeposit calculateInterest  returns (uint256) {
+        return interests[msg.sender].amount;
+    }
+
+    function withdrawInterest(uint256 amount) public isUserEnableToWithdrawalAndDeposit calculateInterest {
+        require(amount > 0, "Transfer amount should be greater than zero");
+        require(interests[msg.sender].amount >= amount, "Insufficent balance");
+
+        interests[msg.sender].amount -= amount;
+
+        (bool success, ) = msg.sender.call{value: amount}("");
+        require(success, "Transfer Failed");
+
+        TransactionHistory memory newTransaction = TransactionHistory(amount, TransactionType.INTEREST);
+        transactionHistory[msg.sender].push(newTransaction);
+
+        emit Withdrawal(msg.sender, "Transfer successfull");
     }
 
 }
